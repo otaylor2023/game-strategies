@@ -45,7 +45,7 @@ module Exercises = struct
     |> place_piece ~piece:Piece.O ~position:{ Position.row = 1; column = 1 }
   ;;
 
-  let _amok1 =
+  let omok1 =
     let open Game in
     Game.empty Game.Game_kind.Omok
     |> place_piece ~piece:Piece.X ~position:{ Position.row = 1; column = 1 }
@@ -232,6 +232,121 @@ module Exercises = struct
     | _ -> state
   ;;
 
+  let rec find_win_path_omok
+    (game : Game.t)
+    (target_piece : Game.Piece.t)
+    (curr_pos : Game.Position.t)
+    ~(empty_list : Game.Position.t list)
+    ~(empty_left : int)
+    ~(filled_left : int)
+    ~(row_inc : int)
+    ~(col_inc : int)
+    : Game.Position.t list
+    =
+    let is_max_empties = Int.equal empty_left 0 in
+    let found_all_filled = Int.equal filled_left 0 in
+    let is_over = found_all_filled && is_max_empties in
+    let is_too_far = filled_left < 0 || empty_left < 0 in
+    match is_over, is_too_far with
+    | _, true -> []
+    | true, _ -> empty_list
+    | false, _ ->
+      (match Game.Position.in_bounds curr_pos ~game_kind:game.game_kind with
+       | false -> []
+       | true ->
+         (match Map.find game.board curr_pos with
+          | None when is_max_empties -> []
+          | Some curr_piece
+            when not (Game.Piece.equal target_piece curr_piece) ->
+            (match found_all_filled with true -> empty_list | false -> [])
+          | curr_piece_option ->
+            let new_empty_list, new_empty_left, new_filled_left =
+              match curr_piece_option with
+              | None -> curr_pos :: empty_list, empty_left - 1, filled_left
+              | Some _curr_piece -> empty_list, empty_left, filled_left - 1
+            in
+            let next_pos =
+              { Game.Position.row = curr_pos.row + row_inc
+              ; column = curr_pos.column + col_inc
+              }
+            in
+            find_win_path_omok
+              game
+              target_piece
+              next_pos
+              ~empty_list:new_empty_list
+              ~empty_left:new_empty_left
+              ~filled_left:new_filled_left
+              ~row_inc
+              ~col_inc))
+  ;;
+
+  let check_for_empty
+    (game : Game.t)
+    (num_to_check : int)
+    (position : Game.Position.t)
+    (row_inc : int)
+    (col_inc : int)
+    =
+    let needed_moves =
+      List.init num_to_check ~f:(fun _i ->
+        { Game.Position.row = position.row - row_inc
+        ; column = position.column - col_inc
+        })
+    in
+    let all_empty =
+      List.for_all needed_moves ~f:(fun pos ->
+        match Map.find game.board pos with None -> true | _ -> false)
+    in
+    if all_empty then Some needed_moves else None
+  ;;
+
+  let get_winning_moves_omok
+    ~(me : Game.Piece.t)
+    (game : Game.t)
+    (num_moves_needed : int)
+    : Game.Position.t list list
+    =
+    let win_length = Game.Game_kind.win_length game.game_kind in
+    let filled_positions = Map.keys game.board in
+    List.concat_map filled_positions ~f:(fun position ->
+      let increments = [ 0, 1; 1, 0; 1, -1; 1, 1 ] in
+      List.filter_map increments ~f:(fun (row_inc, col_inc) ->
+        let curr_piece = Map.find game.board position in
+        match curr_piece with
+        | Some curr_piece when not (Game.Piece.equal curr_piece me) -> None
+        | _ ->
+          let winning_moves =
+            find_win_path_omok
+              game
+              me
+              position
+              ~empty_list:[]
+              ~empty_left:num_moves_needed
+              ~filled_left:(win_length - num_moves_needed)
+              ~row_inc
+              ~col_inc
+          in
+          (match List.length winning_moves with
+           | 0 -> None
+           | num_moves_found ->
+             (match Int.equal num_moves_found num_moves_needed with
+              | true -> Some winning_moves
+              | false ->
+                let extra_moves =
+                  check_for_empty
+                    game
+                    (num_moves_needed - num_moves_found)
+                    position
+                    row_inc
+                    col_inc
+                in
+                (match extra_moves with
+                 | Some extra_moves ->
+                   Some (List.append winning_moves extra_moves)
+                 | None -> None)))))
+  ;;
+
   let rec find_winning_move
     (game : Game.t)
     (target_piece : Game.Piece.t)
@@ -387,9 +502,13 @@ module Exercises = struct
       let length = Game.Game_kind.win_length game.game_kind in
       let length_list = List.init (length - 1) ~f:(fun i -> i + 1) in
       List.fold length_list ~init:0 ~f:(fun score num_empty ->
-        let value = length - num_empty in
+        let value = (length * length) - num_empty in
         let num_win_patterns =
-          List.length (get_winning_moves ~me game num_empty)
+          match game.game_kind with
+          | Game.Game_kind.Tic_tac_toe ->
+            List.length (get_winning_moves ~me game num_empty)
+          | Game.Game_kind.Omok ->
+            List.length (get_winning_moves_omok ~me game num_empty)
         in
         score + (value * num_win_patterns))
   ;;
@@ -430,6 +549,7 @@ module Exercises = struct
       (* print_s
          [%message
           (current_piece : Game.Piece.t) (next_moves : Game.Position.t list)]; *)
+      (* print_game game; *)
       let score_list =
         List.map next_moves ~f:(fun next_move ->
           let new_game = make_move game current_piece next_move in
@@ -452,13 +572,13 @@ module Exercises = struct
        | true ->
          (match List.max_elt score_list ~compare:Int.compare with
           | Some score -> score
-          (* TODO: change *)
-          | None -> 0)
+          (* no non-losing moves *)
+          | None -> Int.min_value)
        | false ->
          (match List.min_elt score_list ~compare:Int.compare with
           | Some score -> score
-          (* TODO: change *)
-          | None -> 0))
+          (* no non-losing moves *)
+          | None -> Int.max_value))
   ;;
 
   let get_best_move (game : Game.t) (me : Game.Piece.t) (depth : int) =
@@ -497,13 +617,19 @@ module Exercises = struct
     | None -> None
   ;;
 
-  let choose_next_move (game : Game.t) (me : Game.Piece.t) =
-    let next_move = get_best_move game me 3 in
+  let choose_next_move (game : Game.t) (me : Game.Piece.t) depth =
+    let next_move = get_best_move game me depth in
     match next_move with
     | Some move -> move
     | None ->
       print_s [%message "no best move"];
-      List.random_element_exn (available_moves game)
+      let available_moves = available_moves game in
+      (match List.is_empty available_moves with
+       | true ->
+         print_s [%message (evaluate game : Game.Evaluation.t)];
+         print_game game;
+         List.random_element_exn available_moves
+       | false -> List.random_element_exn available_moves)
   ;;
 
   let exercise_one =
@@ -615,9 +741,46 @@ module Exercises = struct
          let list = List.init 9 ~f:(fun i -> i) in
          let _winner =
            List.fold list ~init:(game1, piece) ~f:(fun (board, piece) _num ->
+             print_s [%message "BOARD: "];
              print_game board;
-             let best_move = choose_next_move board piece in
+             let best_move = choose_next_move board piece 9 in
              make_move board piece best_move, Game.Piece.flip piece)
+         in
+         (* print_s [%sexp (best_move : Game.Position.t option)]; *)
+         return ())
+  ;;
+
+  let exercise_eight =
+    Command.async
+      ~summary:"Exercise 8: Omok"
+      (let%map_open.Command () = return ()
+       and piece = piece_flag in
+       fun () ->
+         let best_move = choose_next_move omok1 piece 2 in
+         (* make_move omok1 piece best_move *)
+         print_s [%sexp (best_move : Game.Position.t)];
+         return ())
+  ;;
+
+  let exercise_nine =
+    Command.async
+      ~summary:"Exercise 9: Omok against self"
+      (let%map_open.Command () = return ()
+       and piece = piece_flag in
+       fun () ->
+         print_s [%message "starting"];
+         let list = List.init 100 ~f:(fun i -> i) in
+         print_s [%message (List.length list : int)];
+         let _winner =
+           List.fold
+             list
+             ~init:(Game.empty Game.Game_kind.Omok, piece)
+             ~f:(fun (board, piece) _num ->
+               print_s [%message "BOARD: "];
+               (* print_game board; *)
+               let best_move = choose_next_move board piece 2 in
+               print_s [%message (best_move : Game.Position.t)];
+               make_move board piece best_move, Game.Piece.flip piece)
          in
          (* print_s [%sexp (best_move : Game.Position.t option)]; *)
          return ())
@@ -633,6 +796,8 @@ module Exercises = struct
       ; "five", exercise_five
       ; "six", exercise_six
       ; "seven", exercise_seven
+      ; "eight", exercise_eight
+      ; "nine", exercise_nine
       ]
   ;;
 end
@@ -641,7 +806,7 @@ let receive_request _client (query : Rpcs.Take_turn.Query.t) =
   print_s [%message "Query received" (query : Rpcs.Take_turn.Query.t)];
   let (response : Rpcs.Take_turn.Response.t) =
     { piece = query.you_play
-    ; position = Exercises.choose_next_move query.game query.you_play
+    ; position = Exercises.choose_next_move query.game query.you_play 3
     }
   in
   return response
