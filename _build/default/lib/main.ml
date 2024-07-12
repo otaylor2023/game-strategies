@@ -304,13 +304,15 @@ module Exercises = struct
     let is_too_far = filled_left < 0 || empty_left < 0 in
     match is_over, is_too_far with
     | _, true -> []
-    | true, _ -> empty_list
+    | true, _ when found_all_filled -> empty_list
+    | true, _ -> []
     | false, _ ->
       (match Game.Position.in_bounds curr_pos ~game_kind:game.game_kind with
+       | false when found_all_filled -> empty_list
        | false -> []
        | true ->
          (match Map.find game.board curr_pos with
-          | None when is_max_empties -> []
+          | None when is_max_empties -> empty_list
           | Some curr_piece
             when not (Game.Piece.equal target_piece curr_piece) ->
             (match found_all_filled with true -> empty_list | false -> [])
@@ -746,7 +748,102 @@ module Exercises = struct
           | None -> win_value))
   ;;
 
-  let get_best_move (game : Game.t) (me : Game.Piece.t) (depth : int) =
+  let rec get_game_score_ab
+    (game : Game.t)
+    ~(original_piece : Game.Piece.t)
+    ~(current_piece : Game.Piece.t)
+    ~(total_moves_left : int)
+    ~(alpha : int)
+    ~(beta : int)
+    =
+    let next_moves_opt =
+      next_moves_exist game ~current_piece total_moves_left
+    in
+    let is_maximizing = Game.Piece.equal original_piece current_piece in
+    match next_moves_opt with
+    | None ->
+      let og_score = score game current_piece in
+      let score = if is_maximizing then og_score else -og_score in
+      let mult_score = score * (total_moves_left + 1) in
+      (* print_game game; *)
+      (* Core.print_s
+         [%message
+          (og_score : int)
+            (score : int)
+            (mult_score : int)
+            (total_moves_left : int)]; *)
+      mult_score, None
+    | Some next_moves ->
+      (* print_s
+         [%message
+          (current_piece : Game.Piece.t) (next_moves : Game.Position.t list)]; *)
+      (* print_game game; *)
+      let best_score =
+        match is_maximizing with
+        | true -> Int.min_value
+        | false -> Int.max_value
+      in
+      let _alpha, _beta, score, move =
+        List.fold_until
+          next_moves
+          ~init:(alpha, beta, best_score, None)
+          ~finish:(fun values -> values)
+          ~f:(fun (alpha, beta, best_score, best_move) next_move ->
+            let new_game = make_move game current_piece next_move in
+            (* print_game new_game; *)
+            let score, _move =
+              get_game_score_ab
+                new_game
+                ~original_piece
+                ~current_piece:(Game.Piece.flip current_piece)
+                ~total_moves_left:(total_moves_left - 1)
+                ~alpha
+                ~beta
+            in
+            match is_maximizing with
+            | true ->
+              let new_best_score, new_best_move =
+                match best_score > score with
+                | true -> best_score, best_move
+                | false -> score, Some next_move
+              in
+              (match new_best_score > beta with
+               | true ->
+                 Continue_or_stop.Stop
+                   (alpha, beta, new_best_score, new_best_move)
+               | false ->
+                 let new_alpha = max alpha new_best_score in
+                 Continue_or_stop.Continue
+                   (new_alpha, beta, new_best_score, new_best_move))
+            | false ->
+              let new_best_score, new_best_move =
+                match best_score < score with
+                | true -> best_score, best_move
+                | false -> score, Some next_move
+              in
+              (match new_best_score < alpha with
+               | true ->
+                 Continue_or_stop.Stop
+                   (alpha, beta, new_best_score, new_best_move)
+               | false ->
+                 let new_beta = min beta new_best_score in
+                 Continue_or_stop.Continue
+                   (alpha, new_beta, new_best_score, new_best_move))
+            (* print_s
+               [%message
+              (next_move : Game.Position.t)
+                (total_moves_left - 1 : int)
+                (score : int)]; *))
+      in
+      score, move
+  ;;
+
+  let get_best_move
+    (game : Game.t)
+    (me : Game.Piece.t)
+    (depth : int)
+    ~(use_ab : bool)
+    =
     let next_moves = available_moves_nearby_if_possible game me in
     (* print_game game; *)
     (* print_s
@@ -755,40 +852,54 @@ module Exercises = struct
           (depth : int)
           (me : Game.Piece.t)
           (next_moves : Game.Position.t list)]; *)
-    let scores_and_moves =
-      List.map next_moves ~f:(fun next_move ->
-        (* print_s [%message "next"]; *)
-        let new_game = make_move game me next_move in
-        (* print_game new_game; *)
-        (* print_s [%message (depth : int)]; *)
-        let score =
-          get_game_score
-            new_game
-            ~original_piece:me
-            ~current_piece:(Game.Piece.flip me)
-            (depth - 1)
-        in
-        (* print_s [%message (score : int)]; *)
-        score, next_move)
-    in
-    let best_score_and_move =
-      List.max_elt
-        scores_and_moves
-        ~compare:(fun (score1, _move1) (score2, _move2) ->
-          Int.compare score1 score2)
-    in
-    match best_score_and_move with
-    | Some (_score, move) -> Some move
-    | None -> None
+    match use_ab with
+    | true ->
+      let _score, next_move =
+        get_game_score_ab
+          game
+          ~original_piece:me
+          ~current_piece:me
+          ~total_moves_left:depth
+          ~alpha:Int.min_value
+          ~beta:Int.max_value
+      in
+      next_move
+    | false ->
+      let scores_and_moves =
+        List.map next_moves ~f:(fun next_move ->
+          (* print_s [%message "next"]; *)
+          let new_game = make_move game me next_move in
+          (* print_game new_game; *)
+          (* print_s [%message (depth : int)]; *)
+          let score =
+            get_game_score
+              new_game
+              ~original_piece:me
+              ~current_piece:(Game.Piece.flip me)
+              (depth - 1)
+          in
+          (* print_s [%message (score : int)]; *)
+          score, next_move)
+      in
+      let best_score_and_move =
+        List.max_elt
+          scores_and_moves
+          ~compare:(fun (score1, _move1) (score2, _move2) ->
+            Int.compare score1 score2)
+      in
+      (match best_score_and_move with
+       | Some (_score, move) -> Some move
+       | None -> None)
   ;;
 
-  let choose_next_move (game : Game.t) (me : Game.Piece.t) depth =
+  let choose_next_move (game : Game.t) (me : Game.Piece.t) depth ~use_ab =
     match game.game_kind, List.is_empty (Map.keys game.board) with
     | Game.Game_kind.Omok, true ->
-      let coord = Int.of_float (Random.float_range 5. 10.) in
-      { Game.Position.row = coord; column = coord }
+      let rand_row = Int.of_float (Random.float_range 6. 11.) in
+      let rand_col = Int.of_float (Random.float_range 6. 11.) in
+      { Game.Position.row = rand_row; column = rand_col }
     | _, _ ->
-      let next_move = get_best_move game me depth in
+      let next_move = get_best_move game me depth ~use_ab in
       (match next_move with
        | Some move -> move
        | None ->
@@ -893,7 +1004,7 @@ module Exercises = struct
        fun () ->
          let board = trap2 in
          print_game board;
-         let best_move = choose_next_move board piece 9 in
+         let best_move = choose_next_move board piece 9 ~use_ab:false in
          let new_board = place_piece board ~piece ~position:best_move in
          Core.print_s [%sexp (best_move : Game.Position.t)];
          print_game new_board;
@@ -934,7 +1045,9 @@ module Exercises = struct
                | _ ->
                  Core.print_s [%message "BOARD: "];
                  print_game board;
-                 let best_move = choose_next_move board piece 9 in
+                 let best_move =
+                   choose_next_move board piece 9 ~use_ab:false
+                 in
                  make_move board piece best_move, Game.Piece.flip piece)
          in
          (* print_s [%sexp (best_move : Game.Position.t option)]; *)
@@ -947,7 +1060,7 @@ module Exercises = struct
       (let%map_open.Command () = return ()
        and piece = piece_flag in
        fun () ->
-         let best_move = choose_next_move trap2 piece 2 in
+         let best_move = choose_next_move trap2 piece 2 ~use_ab:false in
          (* make_move omok1 piece best_move *)
          print_s [%sexp (best_move : Game.Position.t)];
          return ())
@@ -975,7 +1088,9 @@ module Exercises = struct
                  board, piece
                | _ ->
                  Core.print_s [%message "BOARD: "];
-                 let best_move = choose_next_move board piece 2 in
+                 let best_move =
+                   choose_next_move board piece 2 ~use_ab:true
+                 in
                  Core.print_s [%message (best_move : Game.Position.t)];
                  let new_board, next_piece =
                    make_move board piece best_move, Game.Piece.flip piece
@@ -1003,7 +1118,9 @@ module Exercises = struct
              ~init:(Game.empty Game.Game_kind.Omok)
              ~f:(fun board _num ->
                Core.print_s [%message "BOARD: "];
-               let best_move = choose_next_move board piece 1 in
+               let best_move =
+                 choose_next_move board piece 1 ~use_ab:false
+               in
                Core.print_s [%message (best_move : Game.Position.t)];
                let new_board = make_move board piece best_move in
                print_game new_board;
@@ -1065,14 +1182,24 @@ let receive_request _client (query : Rpcs.Take_turn.Query.t) =
   | Game.Game_kind.Tic_tac_toe ->
     let (response : Rpcs.Take_turn.Response.t) =
       { piece = query.you_play
-      ; position = Exercises.choose_next_move query.game query.you_play 9
+      ; position =
+          Exercises.choose_next_move
+            query.game
+            query.you_play
+            9
+            ~use_ab:false
       }
     in
     return response
   | Game.Game_kind.Omok ->
+    (* let fast_response = Exercises.choose_next_move query.game query.you_play 1 ~use_ab:true in
+       let slow_response = Exercises.choose_next_move query.game query.you_play 2 ~use_ab:true in
+       let time = 10000 in
+       let time_out = Clock.run_after (Time_ns_unix.Span.of_sec 25.) *)
     let (response : Rpcs.Take_turn.Response.t) =
       { piece = query.you_play
-      ; position = Exercises.choose_next_move query.game query.you_play 1
+      ; position =
+          Exercises.choose_next_move query.game query.you_play 2 ~use_ab:true
       }
     in
     return response
